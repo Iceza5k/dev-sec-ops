@@ -1,0 +1,251 @@
+def installNodeDeps(String targetDir) {
+  dir(targetDir) {
+    if (fileExists('package-lock.json')) {
+      sh 'npm ci'
+    } else {
+      sh 'npm install'
+    }
+  }
+}
+
+def runNodeTestsIfPresent(String targetDir) {
+  dir(targetDir) {
+    int hasTestScript = sh(
+      script: "node -e \"const pkg=require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1)\"",
+      returnStatus: true
+    )
+
+    if (hasTestScript == 0) {
+      sh 'npm test -- --ci || npm test'
+    } else {
+      echo "No test script found in ${targetDir}/package.json. Skipping tests."
+    }
+  }
+}
+
+pipeline {
+  agent {
+    kubernetes {
+      yaml '''
+      apiVersion: v1
+      kind: Pod
+      spec:
+        containers:
+        # 1. Container สำหรับ Node.js (ใช้รัน npm install / test)
+        - name: nodejs
+          image: node:20-bullseye-slim
+          command:
+          - cat
+          tty: true
+        
+        # 2. Container สำหรับ Sonar Scanner
+        - name: sonar
+          image: sonarsource/sonar-scanner-cli:latest
+          command:
+          - cat
+          tty: true
+
+        # 3. Container สำหรับ Docker CLI
+        - name: docker-cli
+          image: docker:cli
+          command:
+          - cat
+          tty: true
+          volumeMounts:
+          - mountPath: /var/run/docker.sock
+            name: docker-sock
+        
+        # 4. Container สำหรับ Trivy Scan
+        - name: trivy
+          image: aquasec/trivy:latest
+          command:
+          - cat
+          tty: true
+          volumeMounts:
+          - mountPath: /var/run/docker.sock 
+            name: docker-sock
+        
+        # 5. Container สำหรับยิง API
+        - name: curl
+          image: curlimages/curl:latest
+          command:
+          - cat
+          tty: true
+
+        volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+      '''
+    }
+  }
+
+  options {
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    booleanParam(name: 'PUSH_TO_HARBOR', defaultValue: false, description: 'Push the built image to Harbor')
+    booleanParam(name: 'IMPORT_TO_DEFECTDOJO', defaultValue: false, description: 'Upload the Trivy report to DefectDojo')
+  }
+
+  environment {
+    REPO_URL = 'https://github.com/docker/getting-started-todo-app.git'
+    REPO_BRANCH = 'main'
+
+    APP_NAME = 'getting-started-todo-app'
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
+    REGISTRY_URL = '10.72.110.5:30002'
+    REGISTRY_PROJECT = 'my-project'
+    IMAGE_NAME = "${REGISTRY_URL}/${REGISTRY_PROJECT}/${APP_NAME}:${IMAGE_TAG}"
+
+    SONARQUBE_ENV = 'sonarqube'
+    SONAR_PROJECT_KEY = 'docker-getting-started-todo-app'
+    SONAR_PROJECT_NAME = 'docker-getting-started-todo-app'
+
+    HARBOR_CREDENTIALS_ID = 'harbor-credentials'
+    DEFECTDOJO_URL = 'http://10.72.110.5:31259'
+    DEFECTDOJO_ENGAGEMENT_ID = '1'
+    DEFECTDOJO_PRODUCT_NAME = 'getting-started-todo-app'
+    DEFECTDOJO_API_TOKEN = credentials('defectdojo-api-token')
+  }
+
+  stages {
+    stage('Clone Repository') {
+      steps {
+        deleteDir()
+        git branch: "${env.REPO_BRANCH}", url: "${env.REPO_URL}"
+      }
+    }
+
+    stage('Install Dependencies') {
+      steps {
+        // ใช้ container nodejs ในการรัน (ไม่ต้อง apt-get แล้ว)
+        container('nodejs') {
+          script {
+            installNodeDeps('client')
+            installNodeDeps('backend')
+          }
+        }
+      }
+    }
+
+    stage('Run Tests') {
+      steps {
+        container('nodejs') {
+          script {
+            runNodeTestsIfPresent('client')
+            runNodeTestsIfPresent('backend')
+          }
+        }
+      }
+    }
+
+    
+    stage('SonarQube Analysis') {
+      steps {
+        // ย้ายมาใช้ container 'nodejs' ที่มี Node.js ARM64 แท้ๆ ติดตั้งอยู่
+        container('nodejs') {
+          withCredentials([string(credentialsId: 'sonar', variable: 'SONAR_TOKEN')]) {
+            sh """
+              # 1. ติดตั้ง sonar-scanner ผ่าน npm (เพื่อความชัวร์ว่าจะใช้ตัวที่รองรับ ARM)
+              npm install -g sonarqube-scanner
+
+              # 2. หา Path ของ Node.js ในเครื่อง
+              NODE_EXEC=\$(which node)
+              
+              # 3. รันสแกน โดยบอกให้ใช้ Node.js ตัวที่เราเพิ่งหาเจอ
+              sonar-scanner \
+                -Dsonar.host.url=http://sonarqube-sonarqube.sonarqube.svc.cluster.local:9000 \
+                -Dsonar.login=\${SONAR_TOKEN} \
+                -Dsonar.projectKey=${env.SONAR_PROJECT_KEY} \
+                -Dsonar.projectName=${env.SONAR_PROJECT_NAME} \
+                -Dsonar.projectVersion=${env.BUILD_NUMBER} \
+                -Dsonar.sources=backend,client \
+                -Dsonar.exclusions=**/node_modules/**,**/dist/**,**/coverage/** \
+                -Dsonar.sourceEncoding=UTF-8 \
+                -Dsonar.nodejs.executable=\${NODE_EXEC}
+            """
+          }
+        }
+      }
+    }
+
+    // stage('Quality Gate') {
+    //   steps {
+    //     timeout(time: 10, unit: 'MINUTES') {
+    //       waitForQualityGate abortPipeline: true
+    //     }
+    //   }
+    // }
+
+    stage('Build Container Image') {
+      steps {
+        container('docker-cli') {
+          // สังเกตการใช้ Double Quotes ("") เพื่อให้มันแทนค่าตัวแปรได้
+          sh "docker build -t ${IMAGE_NAME} ."
+        }
+      }
+    }
+
+    stage('Trivy Scan') {
+      steps {
+        container('trivy') {
+          sh """
+            trivy image \
+              --format json \
+              --output trivy-report.json \
+              --severity HIGH,CRITICAL \
+              ${IMAGE_NAME}
+          """
+        }
+      }
+    }
+
+    stage('Push Image to Harbor') {
+      when {
+        expression { return params.PUSH_TO_HARBOR }
+      }
+      steps {
+        container('docker-cli') {
+          withCredentials([usernamePassword(credentialsId: "${env.HARBOR_CREDENTIALS_ID}", usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS')]) {
+            sh """
+              echo "${HARBOR_PASS}" | docker login ${REGISTRY_URL} -u "${HARBOR_USER}" --password-stdin
+              docker push ${IMAGE_NAME}
+              docker logout ${REGISTRY_URL}
+            """
+          }
+        }
+      }
+    }
+
+    stage('Import Scan to DefectDojo') {
+      when {
+        expression { return params.IMPORT_TO_DEFECTDOJO }
+      }
+      steps {
+        container('curl') {
+          sh """
+            curl -sS -X POST "${DEFECTDOJO_URL}/api/v2/import-scan/" \
+              -H "Authorization: Token ${DEFECTDOJO_API_TOKEN}" \
+              -F "scan_type=Trivy Scan" \
+              -F "engagement=${DEFECTDOJO_ENGAGEMENT_ID}" \
+              -F "product_name=${DEFECTDOJO_PRODUCT_NAME}" \
+              -F "active=true" \
+              -F "verified=false" \
+              -F "close_old_findings=false" \
+              -F "scan_date=\$(date +%F)" \
+              -F "minimum_severity=Low" \
+              -F "file=@trivy-report.json"
+          """
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+    }
+  }
+}

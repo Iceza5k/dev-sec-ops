@@ -1,0 +1,15 @@
+# values-jenkins.yaml
+controller:
+  serviceType: NodePort
+  nodePort: 30003
+  admin:
+    Password: "admin" # แก้เป็นรหัสที่คุณต้องการ
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1024Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2048Mi"
+persistence:
+  size: 5Gi

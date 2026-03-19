@@ -1,0 +1,19 @@
+# values-sonar.yaml
+monitoringPasscode: "admin123" 
+edition: "developer"
+elasticsearch:
+  configureNode: true 
+postgresql:
+  primary:
+    persistence:
+      size: 2Gi
+persistence:
+  enabled: true
+  size: 2Gi
+resources:
+  requests:
+    memory: "1Gi"
+    cpu: "500m"
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"

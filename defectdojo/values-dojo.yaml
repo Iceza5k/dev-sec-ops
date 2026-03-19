@@ -1,0 +1,27 @@
+# values-dojo.yaml
+initializer:
+  run: true
+  keepSeconds: 60
+django:
+  replicas: 1
+celery:
+  worker:
+    replicas: 1
+  beat:
+    replicas: 1
+postgresql:
+  persistence:
+    size: 2Gi
+valkey:
+  master:
+    persistence:
+      size: 1Gi
+extraConfigs:
+  DD_ALLOWED_HOSTS: "defectdojo.default.minikube.local,localhost,127.0.0.1,10.72.110.5"
+  DD_CSRF_COOKIE_SECURE: "False"
+  DD_SESSION_COOKIE_SECURE: "False"
+django:
+  service:
+    type: NodePort
+    port: 8080        # พอร์ตภายใน
+    nodePort: 30001
