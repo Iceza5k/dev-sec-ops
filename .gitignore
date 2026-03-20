@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+
+# Environment files
+.env
+.env.*
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
