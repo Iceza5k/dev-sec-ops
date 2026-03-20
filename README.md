@@ -177,6 +177,7 @@ Current Argo CD settings from `argocd/values-argocd.yaml`:
 - HTTP NodePort: `30004`
 - Chart ingress disabled
 - Server runs in insecure mode for local ingress compatibility
+- The same install script also installs Argo Rollouts in namespace `argo-rollouts`
 
 ## Accessing Services
 
